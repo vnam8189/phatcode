@@ -20,12 +20,16 @@ DB_FILE = "database.json"
 # ==========================================
 def load_db():
     if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    # Database mặc định nếu file lỗi hoặc chưa có
     return {
         "users": {}, 
         "codes": [],
-        "channels": ['@kiemtienonline48h'],
+        "channels": ['@kiemtienonline48h'], 
         "game_link": "https://xocdia88.ec"
     }
 
@@ -37,14 +41,19 @@ db = load_db()
 admin_states = {}
 bot = telebot.TeleBot(API_TOKEN)
 
-# --- HÀM KIỂM TRA JOIN NHÓM (LUÔN LUÔN CHECK) ---
+# --- HÀM KIỂM TRA JOIN NHÓM (NGHIÊM NGẶT) ---
 def is_sub(uid_int):
-    if not db["channels"]: return True
+    if not db["channels"]:
+        return True # Không có nhóm check thì cho qua (Admin nên thêm nhóm)
+    
     for channel in db["channels"]:
         try:
             status = bot.get_chat_member(channel, uid_int).status
-            if status in ['left', 'kicked']: return False
-        except: continue
+            if status in ['left', 'kicked']:
+                return False # Chỉ cần thoát 1 nhóm là chặn
+        except Exception as e:
+            print(f"Error checking {channel}: {e}")
+            continue # Bỏ qua nhóm lỗi
     return True
 
 # ==========================================
@@ -72,25 +81,33 @@ def cancel_markup():
 # ==========================================
 # 4. XỬ LÝ SỰ KIỆN
 # ==========================================
+@bot.message_handler(commands=['test_db'])
+def test_db(message):
+    if message.from_user.id in ADMIN_CHINH:
+        bot.send_message(message.chat.id, f"📝 **Data hiện tại:**\n{json.dumps(db, indent=2, ensure_ascii=False)}", parse_mode="Markdown")
+
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = str(message.from_user.id)
     args = message.text.split()
     
-    # Đăng ký user mới và xử lý link ref
     if uid not in db["users"]:
         referrer = args[1] if len(args) > 1 and args[1].isdigit() else None
-        # Không tự cộng tiền khi /start, chỉ ghi nhận người mời
         db["users"][uid] = {'balance': 0, 'invited_by': referrer, 'refs': 0, 'verified': False}
         save_db()
     
-    # Kiểm tra join
+    # KIỂM TRA BẮT BUỘC
     if not is_sub(message.from_user.id):
         list_groups = "\n".join([f"🔹 {c}" for c in db["channels"]])
         msg = f"⚠️ **BẠN BẮT BUỘC PHẢI THAM GIA ĐỦ NHÓM!**\n\n{list_groups}\n\n*Sau khi tham gia, hãy bấm nút xác minh bên dưới.*"
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True).add("✅ Xác Minh Ngay")
         bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
     else:
+        # Nếu đã check ok thì cho vào menu
+        if db["users"][uid]['verified'] == False:
+            db["users"][uid]['verified'] = True
+            save_db()
+            
         bot.send_message(message.chat.id, "✨ Hệ thống đã sẵn sàng!", reply_markup=main_menu(message.from_user.id))
 
 @bot.message_handler(func=lambda msg: True)
@@ -105,7 +122,7 @@ def handle_all(message):
         admin_states.pop(uid_int, None)
         return bot.send_message(uid_int, "Trạng thái đã được reset.", reply_markup=admin_panel_menu())
 
-    # 2. XỬ LÝ TRẠNG THÁI ADMIN NGHIÊM NGẶT
+    # 2. XỬ LÝ TRẠNG THÁI ADMIN
     if uid_int in ADMIN_CHINH or uid_int in ADMIN_PHU:
         if state == "WAIT_GAME_LINK":
             db["game_link"] = text
@@ -131,25 +148,19 @@ def handle_all(message):
             save_db(); admin_states.pop(uid_int)
             return bot.send_message(uid_int, f"✅ Đã thêm nhóm {text}", reply_markup=admin_panel_menu())
 
-        # CHỨC NĂNG CỘNG/TRỪ TIỀN ADMIN
         if state == "WAIT_BALANCE_CMD":
             try:
-                # Định dạng: ID | số_tiền
                 target_id, amount = text.split('|')
                 target_id = target_id.strip()
                 amount = int(amount.strip())
-                
                 if target_id in db["users"]:
                     db["users"][target_id]['balance'] += amount
                     save_db()
-                    bot.send_message(uid_int, f"✅ Đã cộng/trừ {amount}đ cho user {target_id}.\nSố dư mới: {db['users'][target_id]['balance']}đ")
+                    bot.send_message(uid_int, f"✅ Đã cập nhật tiền cho {target_id}.\nSố dư mới: {db['users'][target_id]['balance']}đ")
                     try: bot.send_message(target_id, f"💰 **TÀI KHOẢN CẬP NHẬT:** {amount}đ (Từ Admin)")
                     except: pass
-                else:
-                    bot.send_message(uid_int, "❌ Không tìm thấy ID user này.")
-            except:
-                bot.send_message(uid_int, "❌ Định dạng sai. Vui lòng nhập: `ID_USER | Số_Tiền` (Số tiền âm để trừ)", parse_mode="Markdown", reply_markup=cancel_markup())
-            
+                else: bot.send_message(uid_int, "❌ Không tìm thấy ID.")
+            except: bot.send_message(uid_int, "❌ Sai định dạng: `ID | Tiền`", parse_mode="Markdown", reply_markup=cancel_markup())
             if text != "❌ Hủy Lệnh Admin": admin_states.pop(uid_int, None)
             return
 
@@ -164,7 +175,7 @@ def handle_all(message):
             if not db["users"][uid]['verified']:
                 db["users"][uid]['verified'] = True
                 
-                # CỘNG TIỀN NGHIÊM NGẶT TẠI ĐÂY
+                # CỘNG TIỀN
                 ref_id = db["users"][uid].get('invited_by')
                 if ref_id and str(ref_id) in db["users"] and str(ref_id) != uid:
                     db["users"][str(ref_id)]['balance'] += MONEY_PER_REF
@@ -232,7 +243,7 @@ def handle_all(message):
 
     elif text == "💰 Cộng/Trừ Tiền" and uid_int in ADMIN_CHINH:
         admin_states[uid_int] = "WAIT_BALANCE_CMD"
-        bot.send_message(uid_int, "Nhập theo định dạng:\n`ID_USER | Số_Tiền`\n\nVí dụ để trừ 10k: `1234567 | -10000`", parse_mode="Markdown", reply_markup=cancel_markup())
+        bot.send_message(uid_int, "Nhập: `ID_USER | Số_Tiền`", parse_mode="Markdown", reply_markup=cancel_markup())
 
     elif text == "👥 Danh Sách Mem":
         bot.send_message(uid_int, f"👥 Tổng: `{len(db['users'])}` mem.")
