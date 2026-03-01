@@ -25,7 +25,6 @@ def load_db():
                 return json.load(f)
         except:
             pass
-    # Database mặc định nếu file lỗi hoặc chưa có
     return {
         "users": {}, 
         "codes": [],
@@ -44,16 +43,16 @@ bot = telebot.TeleBot(API_TOKEN)
 # --- HÀM KIỂM TRA JOIN NHÓM (NGHIÊM NGẶT) ---
 def is_sub(uid_int):
     if not db["channels"]:
-        return True # Không có nhóm check thì cho qua (Admin nên thêm nhóm)
+        return True # Admin lưu ý: Nên thêm nhóm để bắt buộc check
     
     for channel in db["channels"]:
         try:
             status = bot.get_chat_member(channel, uid_int).status
             if status in ['left', 'kicked']:
-                return False # Chỉ cần thoát 1 nhóm là chặn
+                return False # Thoát 1 nhóm là chặn hết
         except Exception as e:
             print(f"Error checking {channel}: {e}")
-            continue # Bỏ qua nhóm lỗi
+            continue
     return True
 
 # ==========================================
@@ -81,34 +80,31 @@ def cancel_markup():
 # ==========================================
 # 4. XỬ LÝ SỰ KIỆN
 # ==========================================
-@bot.message_handler(commands=['test_db'])
-def test_db(message):
-    if message.from_user.id in ADMIN_CHINH:
-        bot.send_message(message.chat.id, f"📝 **Data hiện tại:**\n{json.dumps(db, indent=2, ensure_ascii=False)}", parse_mode="Markdown")
-
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = str(message.from_user.id)
     args = message.text.split()
     
+    # Ghi nhận người dùng mới
     if uid not in db["users"]:
         referrer = args[1] if len(args) > 1 and args[1].isdigit() else None
         db["users"][uid] = {'balance': 0, 'invited_by': referrer, 'refs': 0, 'verified': False}
         save_db()
     
-    # KIỂM TRA BẮT BUỘC
+    # NẾU CHƯA THAM GIA ĐỦ NHÓM -> BẮT BUỘC JOIN
     if not is_sub(message.from_user.id):
         list_groups = "\n".join([f"🔹 {c}" for c in db["channels"]])
         msg = f"⚠️ **BẠN BẮT BUỘC PHẢI THAM GIA ĐỦ NHÓM!**\n\n{list_groups}\n\n*Sau khi tham gia, hãy bấm nút xác minh bên dưới.*"
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True).add("✅ Xác Minh Ngay")
         bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
-    else:
-        # Nếu đã check ok thì cho vào menu
-        if db["users"][uid]['verified'] == False:
-            db["users"][uid]['verified'] = True
-            save_db()
+        return # Dừng không cho dùng bot
+
+    # Nếu đã ok thì lưu trạng thái verified và cho dùng bot
+    if not db["users"][uid]['verified']:
+        db["users"][uid]['verified'] = True
+        save_db()
             
-        bot.send_message(message.chat.id, "✨ Hệ thống đã sẵn sàng!", reply_markup=main_menu(message.from_user.id))
+    bot.send_message(message.chat.id, "✨ Hệ thống đã sẵn sàng!", reply_markup=main_menu(message.from_user.id))
 
 @bot.message_handler(func=lambda msg: True)
 def handle_all(message):
@@ -144,6 +140,8 @@ def handle_all(message):
             return bot.send_message(uid_int, "✅ Đã gửi xong!", reply_markup=admin_panel_menu())
         
         if state == "WAIT_ADD_GROUP":
+            if not text.startswith("@"):
+                return bot.send_message(uid_int, "❌ Username phải bắt đầu bằng @", reply_markup=cancel_markup())
             db["channels"].append(text)
             save_db(); admin_states.pop(uid_int)
             return bot.send_message(uid_int, f"✅ Đã thêm nhóm {text}", reply_markup=admin_panel_menu())
@@ -164,25 +162,25 @@ def handle_all(message):
             if text != "❌ Hủy Lệnh Admin": admin_states.pop(uid_int, None)
             return
 
-    # 3. KIỂM TRA JOIN NHÓM (CHẶN NGƯỜI DÙNG)
+    # 3. KIỂM TRA JOIN NHÓM (CHẶN TẤT CẢ TÍNH NĂNG NẾU THOÁT NHÓM)
     if not is_sub(uid_int):
-        if text != "✅ Xác Minh Ngay":
-            return start(message)
+        # Nếu chưa join thì quay lại hàm start để hiện nút xác minh
+        return start(message)
 
-    # 4. NÚT BẤM
+    # 4. NÚT BẤM CỦA NGƯỜI DÙNG
     if text == "✅ Xác Minh Ngay":
         if is_sub(uid_int):
             if not db["users"][uid]['verified']:
                 db["users"][uid]['verified'] = True
                 
-                # CỘNG TIỀN
+                # CỘNG TIỀN NẾU ĐƯỢC MỜI
                 ref_id = db["users"][uid].get('invited_by')
                 if ref_id and str(ref_id) in db["users"] and str(ref_id) != uid:
                     db["users"][str(ref_id)]['balance'] += MONEY_PER_REF
                     db["users"][str(ref_id)]['refs'] += 1
                     save_db()
                     try: 
-                        bot.send_message(ref_id, f"🎉 **TÀI KHOẢN +10.000đ**!\nUser {uid} đã xác minh thành công.", parse_mode="Markdown")
+                        bot.send_message(ref_id, f"🎉 **TÀI KHOẢN +{MONEY_PER_REF:,}đ**!\nUser {uid} đã xác minh thành công.", parse_mode="Markdown")
                     except: pass
                 save_db()
             bot.send_message(uid_int, "✅ Xác minh thành công!", reply_markup=main_menu(uid_int))
@@ -261,4 +259,4 @@ def home(): return "Bot Live"
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
     bot.infinity_polling()
-            
+                    
